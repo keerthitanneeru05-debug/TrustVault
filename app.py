@@ -18,19 +18,18 @@ init_db()
 # AUDIT LOG FUNCTION
 def log_action(user_id, action, document_id=None, details=None):
     connection = get_db_connection()
-
-    connection.execute(
-        """
-        INSERT INTO audit_logs
-        (user_id, action, document_id, details)
-        VALUES (?, ?, ?, ?)
-        """,
-        (user_id, action, document_id, details)
-    )
-
-    connection.commit()
-    connection.close()
-
+    try:
+        connection.execute(
+            """
+            INSERT INTO audit_logs
+            (user_id, action, document_id, details)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, action, document_id, details)
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 # HOME PAGE
 @app.route("/")
@@ -68,8 +67,8 @@ def home():
 # USER REGISTRATION
 @app.route("/register", methods=["POST"])
 def register():
-    username = request.form["username"].strip()
-    password = request.form["password"]
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
 
     if not username:
         return "Please enter a username."
@@ -88,7 +87,6 @@ def register():
             """,
             (username, password_hash)
         )
-
         connection.commit()
 
         user = connection.execute(
@@ -97,21 +95,30 @@ def register():
         ).fetchone()
 
         user_id = user["id"]
+
+    except Exception as e:
+        connection.rollback()
+        app.logger.exception("Registration database error")
+
+        if "UNIQUE constraint failed: users.username" in str(e):
+            return "That username is already registered. Please choose another.", 409
+
+        return "Registration could not be completed. Please try again later.", 500
+
+    finally:
         connection.close()
 
+    # Audit logging is separate: an audit-log error must not undo registration.
+    try:
         log_action(
             user_id,
             "REGISTER",
             details="New account registered"
         )
-
-    except Exception as e:
-        connection.close()
-        print("Registration Error:", e)
-        return "Registration failed. Check VS Code terminal."
+    except Exception:
+        app.logger.exception("Registration succeeded, but audit logging failed")
 
     return redirect("/")
-
 
 # USER LOGIN
 @app.route("/login", methods=["POST"])
